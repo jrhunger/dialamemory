@@ -15,4 +15,6 @@ Pre-Git version log:
 - 2016/03/16 - 0.6.0 aka MemoryPhone6
   - Add support for .num files. If {dialed-number}.num exists, read it and say any digits in it using the samples in AudioSampleDigits.h.  
   - Move file checking to its own function.
+  - Additional comments
+  - Morse file handling moved to SDMorse.h (honestly not sure if it worked from file in 0.5.0)
 
