@@ -6,8 +6,12 @@
 #include "AudioSampleNoData.h"
 #include "AudioSampleDigits.h"
 #include "MorseEncoderSine.h"
+#include "SDMorse.h"
 
 /* Memory Phone
+  v6 - Add support for .num files. If {dialed-number}.num exists, read it and
+       say any digits in it using the samples in AudioSampleDigits.h
+       Move file checking to its own function.
   v5 - Add support for .mor files.  If {dialed-number}.mor exists, read any text
       out of it and play that in Morse code.
   v4 - Add ability to traverse subdirectories on SD card.  When sample starts
@@ -64,16 +68,11 @@ void setup()
   AudioProcessorUsageMaxReset();
   AudioMemoryUsageMaxReset();
 
-  Serial.print("calling sendMorse\n");
-  sendMorse(&sine1,'J');
-  Serial.print("calling testMorse\n");
-  testMorse(&sine1);
-
   SPI.setMOSI(7);
   SPI.setSCK(14);
   pinMode(10,OUTPUT); //required for SD library functions
-  // we'll use the initialization code from the utility libraries
-  // since we're just testing if the card is working!
+  // If SD isn't working, not much to do.. repeatedly play sit tones followed by
+  // error message audio sample from AudioSampleNoData.h
   if (!SD.begin(chipSelect)) {
     digitalWrite(13, HIGH);
     while(true) {
@@ -86,23 +85,10 @@ void setup()
       }   
     }
   } else {
-    debugMsg("Wiring is correct and a card is present."); 
+    debugMsg("SD seems to be working"); 
   }
-  
-  File dataFile = SD.open("README.txt");
 
-  // if the file is available, read it to serial:
-  if (dataFile) {
-    while (dataFile.available()) {
-      Serial.write(dataFile.read());
-    }
-    dataFile.close();
-  }
-  // if the file isn't open, pop up an error:
-  else {
-    Serial.println("error opening README.txt");
-  }
-  
+  // set the detector pins to input mode
   pinMode(DIALING, INPUT_PULLUP);
   pinMode(CLICK, INPUT_PULLUP);
 
@@ -113,17 +99,26 @@ void setup()
 }
 
 // globals used in loop
+// used to debounce the two inputs
 Bounce dialBounce = Bounce(DIALING, 25);
 Bounce clickBounce = Bounce(CLICK, 25);
+// dialing is true when the dial has been moved from its resting position
 boolean dialing = false;
+// clicking is true when in the middle of a dialing pulse
 boolean clicking = false;
+// used to count the clicks/pulses
 int count = 0;
+// used for analog reads
 int value;
-unsigned long last_perf = 0;
-unsigned long last_busy = 0;
+//holds the number currently being dialed
 String dialedNum = String();
+// the path in which to look for files.  initially /, but 
+// will be appended with the dialed # when a wav file is playing
+// (to support additional actions, e.g. "dial 1 for ...")
 String sdPath = "/";
+// when this is true, each digit will be spoken right after it is dialed
 boolean sayDigitsEnabled = false;
+// keep track of last user action
 
 void loop()
 {
@@ -141,45 +136,36 @@ void loop()
     clickBounce.update();
     if (value == HIGH) { // not dialing any more, so let's see what was dialed
       dialing = false;
-      if (count == 0) {  // no clicks counted is an error ##TODO: maybe add a message
+      // If count is 0, dial was moved from resting position, but not far enough to trigger
+      // the single pulse for 1.  Use this as a secret input, to enable debug output.
+      // TODO: check for previously dialed digit(s) to activate different debug/diag behavior
+      if (count == 0) {  
         debugMsg("0 clicks: enabling audio digits, clearing dialed #");
         sayDigitsEnabled = true;
         dialedNum = String();
       }
-      else {
+      else { //nonzero # of pulses/clicks
         if (count == 10) { // dialing 0 == 10 clicks
           count = 0;
         }
         debugMsg(String(count));
-        sayDigit(count);
+        if (sayDigitsEnabled) {
+          sayDigit(count);
+        }
         dialedNum = String(dialedNum + String(count)); // append dialed digit to the number dialed
       }
 // If someone has dialed too many digits without matching, encourage them to start over
       if (dialedNum.length() > 10) { 
         busy();
       }
-//      Serial.println(dialedNum);
-// See if there is an audio file for the number that has been dialed so far
-      String fileStr = String(sdPath + dialedNum + ".wav"); 
-      if (fileStr.length() > 255) {
-        busy();
-      }
-      char file[256];
-      fileStr.toCharArray(file,255);
-      // Disable audio interrupts while checking SD in case sdwav is running
-      AudioNoInterrupts();
-      boolean numFileExists = SD.exists(file);
-      AudioInterrupts();
-      
-      if (numFileExists) {
+      debugMsg(String("checking file for ") + dialedNum);
+      if (checkNumFile(sdPath, dialedNum)) {
+        // found something to play, so get ready for next #
         sdPath.concat(dialedNum + "/");
         dialedNum = String();
-        ringback(1);  // plays the ringing sound
-        debugMsg(String("playing file: ") + String(file));
-        sdwav.play(file); // and then the file   
       }
-      else { // dialed # does not correspond to an audio file
-        debugMsg("no file: " + fileStr);
+      else {
+        debugMsg(dialedNum + String(" file not found"));
       }
     }
     else { // dial pin is still low == we are dialing, so count clicks
@@ -206,25 +192,79 @@ void loop()
       count = 0;
     }
   }
-  
-  // can't remember where i stole this from, probably teensy audio examples
-  // if a serial is attached, it will output some profiling info every 5 sec
-  /*
-  if(millis() - last_perf >= 5000) {
-    if(Serial) {
-      Serial.print("Proc = ");
-      Serial.print(AudioProcessorUsage());
-      Serial.print(" (");    
-      Serial.print(AudioProcessorUsageMax());
-      Serial.print("),  Mem = ");
-      Serial.print(AudioMemoryUsage());
-      Serial.print(" (");    
-      Serial.print(AudioMemoryUsageMax());
-      Serial.println(")");   
-    }  
-    last_perf = millis();
+}
+
+// check for existence of a file in the {sdPath} folder
+// named {digits}.(wav|mor|num) in that order of preference
+// and handle it appropriately depending on the extension
+boolean checkNumFile(String sdPath, String digits) {
+  String fileStr;
+  char file[256];
+  boolean fileExists;
+  debugMsg(String("checkNumFile: ") + sdPath + digits);
+
+// ** .wav files get played with sdwav.play()
+  fileStr = String(sdPath + digits + ".wav"); 
+  if (fileStr.length() > 255) {
+    busy();
+  }
+  fileStr.toCharArray(file,255);
+  // Disable audio interrupts while checking SD in case sdwav is running
+  AudioNoInterrupts();
+  fileExists = SD.exists(file);
+  AudioInterrupts();      
+  if (fileExists) {
+    ringback(1);  // plays the ringing sound
+    debugMsg(String("playing file: ") + String(file));
+    sdwav.play(file); // and then the file
+    return true;   
+  }
+  else {
+    debugMsg(String("no file: ") + String(file));
+  }
+
+// if you get here, no .wav file so try again with .mor
+// .mor files get handled by SDMorse (from SDMorse.h)
+  fileStr = String(sdPath + digits + ".mor"); 
+  if (fileStr.length() > 255) {
+    busy();
   } 
-  */
+  fileStr.toCharArray(file,255);
+  // Disable audio interrupts while checking SD in case sdwav is running
+  AudioNoInterrupts();
+  fileExists = SD.exists(file);
+  AudioInterrupts();      
+  if (fileExists) {
+    ringback(1);  // plays the ringing sound
+    debugMsg(String("Sending Morse File: ") + String(file));
+    SDMorse(&sine1, file);
+    return true;   
+  }
+  else {
+    debugMsg(String("no file: ") + String(file));
+  }
+
+// if you get here, no .wav or .mor file so try again with .num
+// .num files are handled by local function SDSayDigits()
+  fileStr = String(sdPath + digits + ".num"); 
+  if (fileStr.length() > 255) {
+    busy();
+  }  
+  fileStr.toCharArray(file,255);
+  // Disable audio interrupts while checking SD in case sdwav is running
+  AudioNoInterrupts();
+  fileExists = SD.exists(file);
+  AudioInterrupts();      
+  if (fileExists) {
+    ringback(1);  // plays the ringing sound
+    debugMsg(String("Saying Number file: ") + String(file));
+    SDSayDigits(file);
+    return true;   
+  }
+  else {
+   debugMsg(String("no file: ") + String(file));
+  }
+  return false;
 }
 
 // ringback is the sound you hear in the phone when the other end is ringing
@@ -257,17 +297,16 @@ void ringback(int count)
   }    
 }
 
+// set amplitude and frequency of both sines (AudioSynthWaveforms) to 0 
 void hushSine() {
   debugMsg("hushSine");
   sine1.begin(0,0,TONE_TYPE_SINE);
   sine2.begin(0,0,TONE_TYPE_SINE);
 }
-
-
   
 // The busy signal is composed of two tones (620 and 480 Hz) at a cadence
 // of .5s on and .5s off.  This function never exits because we expect
-// someone to hang up and try again aka reboot the teensy.
+// someone to hang up and try again (aka reboot the teensy).
 void busy()
 {
   elapsedMillis sinceBuzz = 0;
@@ -339,76 +378,44 @@ void sit() {
 // uses the data from AudioSampleDigits.h
 // requires initialized memplay global variable
 void sayDigit(int digit) {
-  if (!sayDigitsEnabled) {
-    return;
-  }
-  if ((digit > 0) && (digit < 10)) {  // only play digits we can..
+  if ((digit >= 0) && (digit < 10)) {  // only play digits we can..
     memplay.play(AudioSampleDigits[digit]);
+    delay(10);
     while (memplay.isPlaying()) {
-      delay(20);
+      delay(10);
     } 
   }
 }  
 
+// SDSayDigits - Read a file on the SD Card, and "speak" any digits found in it using
+// sayDigit()
+void SDSayDigits(char *numFilename) {
+  File numFile = SD.open(numFilename);
+  char rc;
+  if (numFile) {
+    debugMsg(String("opened ") + String(numFilename));
+    while (numFile.available()) {  
+      rc = numFile.read();
+      debugMsg(rc);
+      if ((rc > 47) && (rc < 58)) {
+        sayDigit(int(rc - 48));
+      }
+    }
+  }
+  else {
+    debugMsg(String("unable to open ") + String(numFilename));
+  }
+}
+
 // Handle debug messages appropriately
-// If Serial is initialized, print there.
+// If debug is set, print to Serial. Otherwise ignore.  Maybe in future add ability to write to Serial.
 void debugMsg(String msg) {
   if(debug) {
     Serial.println(msg);
   }
 }
 void debugMsg(const char msg) {
-  debugMsg(String(msg));
-}
-
-void sendMorse(AudioSynthWaveform *sineP, char sendChar)
-{
-  morseEncoderSine morseSine(sineP);
-  morseSine.setspeed(13);
-  morseSine.encode();
-  morseSine.write(sendChar);
-  morseSine.encode();
-  while (! morseSine.available()) {
-    Serial.print(",");
-    morseSine.encode();
-    delay(100);
-    Serial.print("-");
-  }
-  Serial.println("endOfSendMorse");
-}
-
-void testMorse(AudioSynthWaveform *sineP)
-{
-  unsigned long msecs = millis();
-  unsigned long nows;
-  Serial.println(msecs);
-  morseEncoderSine morseSine(sineP);
-  //Serial.println("a");
-  morseSine.setspeed(13);
-  char sendChar = 'a';
-  while (true) {
-    //Serial.println("encoding");
-    morseSine.encode();
-    //Serial.println("encoded");
-    nows = millis();
-    if ((nows - msecs) > 500) {
-      //Serial.println(".");
-    if (morseSine.available()) {
-      Serial.println("writing ");
-      Serial.println(sendChar);
-      Serial.println("\n");
-      msecs = nows;
-      morseSine.write(sendChar);
-      sendChar++;
-      if (sendChar > 'z') {
-        sendChar = 'a';
-      }
-    }
-    }
-    else {
-      //Serial.println(nows);
-    }
-    delay(10);
+  if(debug) {
+    debugMsg(String(msg));
   }
 }
-

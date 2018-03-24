@@ -12,3 +12,7 @@ Pre-Git version log:
   - Add ability to traverse subdirectories on SD card.  When sample starts playing, use # as directory and look inside it for any subsequently-dialed #s
 - 2016/03/07 - 0.5.0 aka MemoryPhone5
   - Add support for .mor files.  If {dialed-number}.mor exists, read any text out of it and play that in Morse code.
+- 2016/03/16 - 0.6.0 aka MemoryPhone6
+  - Add support for .num files. If {dialed-number}.num exists, read it and say any digits in it using the samples in AudioSampleDigits.h.  
+  - Move file checking to its own function.
+
