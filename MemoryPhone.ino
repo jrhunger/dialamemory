@@ -3,11 +3,14 @@
 #include <SD.h>
 #include <Wire.h>
 #include <Bounce.h>
+#include "AudioSampleNoData.h"
+#include "AudioSampleDigits.h"
 
 // change this to match your SD shield or module;
 // Teensy 3.1 Audio Shield = 6
 const int chipSelect = 6;  
 AudioPlaySdWav sdwav;
+AudioPlayMemory memplay;
 
 AudioSynthWaveform sine1;
 AudioSynthWaveform sine2;
@@ -16,30 +19,32 @@ AudioMixer4 mixer1;
 AudioOutputI2S audioOut;
 AudioConnection c0(sine1, 0, mixer1, 0);
 AudioConnection c1(sine2, 0, mixer1, 1);
-AudioConnection c4(sdwav, 0, mixer1, 2);
+AudioConnection c2(sdwav, 0, mixer1, 2);
+AudioConnection c3(memplay, 0, mixer1, 2);
 
-AudioConnection c2(mixer1, 0, audioOut, 0);
-AudioConnection c3(mixer1, 0, audioOut, 1);
+AudioConnection c4(mixer1, 0, audioOut, 0);
+AudioConnection c5(mixer1, 0, audioOut, 1);
 
 AudioControlSGTL5000 codec;
 
-int volume = 40;
+int volume = 512;
 
 // yellow
 #define DIALING 24
 // blue
 #define CLICK 26
 
-Bounce dialBounce = Bounce(DIALING, 25);
-Bounce clickBounce = Bounce(CLICK, 25);
-boolean dialing = false;
-boolean clicking = false;
-int count = 0;
-int value;
-
 void setup()
 {
-  Serial.begin(115200);
+//  Serial.begin(115200);
+  pinMode(13,OUTPUT);
+  
+  AudioMemory(5);
+  codec.enable();
+  codec.volume((float)volume / 1023);
+
+  AudioProcessorUsageMaxReset();
+  AudioMemoryUsageMaxReset();
 
   SPI.setMOSI(7);
   SPI.setSCK(14);
@@ -47,90 +52,104 @@ void setup()
   // we'll use the initialization code from the utility libraries
   // since we're just testing if the card is working!
   if (!SD.begin(chipSelect)) {
-    Serial.println("initialization failed. Things to check:");
-    Serial.println("* is a card is inserted?");
-    Serial.println("* Is your wiring correct?");
-    Serial.println("* did you change the chipSelect pin to match your shield or module?");
-    return;
+    digitalWrite(13, HIGH);
+    while(true) {
+      digitalWrite(13, HIGH);
+      sit();
+      digitalWrite(13, LOW);
+      memplay.play(AudioSampleNodata);
+      while (memplay.isPlaying()) {
+        delay(20);
+      }   
+    }
   } else {
-   Serial.println("Wiring is correct and a card is present."); 
+    //Serial.println("Wiring is correct and a card is present."); 
   }
   
   pinMode(DIALING, INPUT_PULLUP);
   pinMode(CLICK, INPUT_PULLUP);
 
-  AudioMemory(5);
-  codec.enable();
-  codec.volume(0.3);
-
-  AudioProcessorUsageMaxReset();
-  AudioMemoryUsageMaxReset();
 
   // start with a dial tone (440Hz + 350Hz)
   sine1.begin(0.8,440.0,TONE_TYPE_SINE);
   sine2.begin(0.8,350.0,TONE_TYPE_SINE);
 }
 
+// globals used in loop
+Bounce dialBounce = Bounce(DIALING, 25);
+Bounce clickBounce = Bounce(CLICK, 25);
+boolean dialing = false;
+boolean clicking = false;
+int count = 0;
+int value;
 unsigned long last_perf = 0;
 unsigned long last_busy = 0;
 String dialedNum = String();
 
 void loop()
 {
-  dialBounce.update();
+  // read analog volume and set output volume accordingly
+  value = analogRead(15);
+  if (value != volume) {
+    volume = value;
+    codec.volume((float)volume / 1023);
+  }
+  
+  dialBounce.update(); 
   value = dialBounce.read();
   if (dialing) {
     clickBounce.update();
-    if (value == HIGH) {
-      if (count == 0) {
+    if (value == HIGH) { // not dialing any more, so let's see what was dialed
+      dialing = false;
+      if (count == 0) {  // no clicks counted is an error ##TODO: maybe add a message
         sit();
       }
-      if (count == 10) {
+      if (count == 10) { // dialing 0 == 10 clicks
         count = 0;
       }
-      dialedNum = String(dialedNum + String(count));
-      if (dialedNum.length() > 10) {
+      sayDigit(count);
+      dialedNum = String(dialedNum + String(count)); // append dialed digit to the number dialed
+// If someone has dialed too many digits without matching, encourage them to start over
+      if (dialedNum.length() > 10) { 
         busy();
       }
-      Serial.println(dialedNum);
-      String fileStr = String(dialedNum + ".wav");
+//      Serial.println(dialedNum);
+// See if there is an audio file for the number that has been dialed so far
+      String fileStr = String(dialedNum + ".wav"); 
       char file[14];
       fileStr.toCharArray(file,13);
       if (SD.exists(file)) {
-        //if not doing ringback, need to uncomment these to stop the dial tone
-        //sine1.begin(0,0,TONE_TYPE_SINE);
-        //sine2.begin(0,0,TONE_TYPE_SINE);
-        ringback(1);
-        sdwav.play(file);        
+        ringback(1);  // plays the ringing sound
+        sdwav.play(file); // and then the file   
       }
-      else {
-        Serial.print("no file: '");
-        Serial.print(file);
-        Serial.println("'");
+      else { // dialed # does not correspond to an audio file
+//        Serial.print("no file: '");
+//        Serial.print(file);
+//        Serial.println("'");
       }
-      dialing = false;
     }
-    else {
+    else { // dial pin is still low == we are dialing, so count clicks
       value = clickBounce.read();
-      if (clicking && (value == HIGH)) {
+      if (clicking && (value == HIGH)) { // low to high transition == end of click
         count++;
         clicking = false;
       }
-      if (! clicking && (value == LOW)) {
+      if (! clicking && (value == LOW)) { // high to low transition == start of click
         clicking = true;
       }
     }      
   }
   else { // not dialing
-    if (value == LOW) {
-      //Serial.println("dialing");
-      //delay(500);
+    if (value == LOW) { // now we are. prepare to count
+      hushSine();
       dialing = true;
       clicking = false;
       count = 0;
     }
   }
   
+  // can't remember where i stole this from, probably teensy audio examples
+  // if a serial is attached, it will output some profiling info every 5 sec
   if(millis() - last_perf >= 5000) {
     if(Serial) {
       Serial.print("Proc = ");
@@ -147,6 +166,11 @@ void loop()
   } 
 }
 
+// ringback is the sound you hear in the phone when the other end is ringing
+// It is composed of two sine waves (440 and 480.4 Hz). The warbling is due to
+// beat frequencies between the two.  Current rhythm is 4 seconds on and 2 
+// seconds pause, which repeats a # of times as specified by the argument, after
+// which the function returns.
 void ringback(int count)
 {
   elapsedMillis sinceBuzz = 0;
@@ -171,6 +195,21 @@ void ringback(int count)
   }    
 }
 
+void hushSine() {
+  sine1.begin(0,0,TONE_TYPE_SINE);
+  sine2.begin(0,0,TONE_TYPE_SINE);
+}
+
+void sayDigit(int digit) {
+  memplay.play(AudioSampleDigits[digit]);
+  while (memplay.isPlaying()) {
+    delay(20);
+  } 
+}  
+  
+// The busy signal is composed of two tones (620 and 480 Hz) at a cadence
+// of .5s on and .5s off.  This function never exits because we expect
+// someone to hang up and try again aka reboot the teensy.
 void busy()
 {
   elapsedMillis sinceBuzz = 0;
@@ -212,6 +251,10 @@ durations used on a given call is used to indicate why the call
 did not complete.
 */
 void sit() {
+  if(Serial) {
+      Serial.print("sit\n");
+  }
+      
   elapsedMillis since = 0;
   byte phase = 0;
   // Start playing tone 1
