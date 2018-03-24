@@ -1,4 +1,6 @@
 // Converted from nodataproprietor.wav, using 11025 Hz, u-law encoding
+// Audio Data created at http://www.text2speech.org/ using the 
+// Male US (Scottish Accent) voice
 const unsigned int AudioSampleNodata[10089] = {
 0x03009DA0,0x80008000,0x00008000,0x00800080,0x00800080,0x01000000,0x01010001,0x02010101,
 0x01020202,0x81000100,0x80008180,0x80000080,0x01010101,0x01000200,0x80018000,0x81818180,

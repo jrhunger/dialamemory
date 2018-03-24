@@ -1,5 +1,6 @@
 // Audio data and from wav2sketch and helper array for accessing programatically by
-// digit parameter.
+// digit parameter.  Audio Data created at http://www.text2speech.org/ using the 
+// Male US (Scottish Accent) voice
 
 // Audio data converted from WAV file by wav2sketch
 // Converted from d0.wav, using 11025 Hz, u-law encoding

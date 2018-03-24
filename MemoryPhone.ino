@@ -9,6 +9,10 @@
 #include "SDMorse.h"
 
 /* Memory Phone
+  v7 - Add support for a timeout message after dial tone plays for too long
+       Add support for a config file on the SD card to set certain parameters
+       * DIAL-TIMEOUT - # of seconds to wait before playing timeout message
+       * DIAL-TIMEOUT-MESSAGE - filename to play after dial timeout
   v6 - Add support for .num files. If {dialed-number}.num exists, read it and
        say any digits in it using the samples in AudioSampleDigits.h
        Move file checking to its own function.
@@ -56,6 +60,11 @@ int volume = 512;
 // blue
 #define CLICK 26
 
+// Used for idle timeout
+long idleTimeoutMillis = 0;  // 0 = disabled, nonzero = # of millis to wait before playing timeout file
+char idleTimeoutFile[256];
+long idleTimerStart;
+
 void setup()
 {
   Serial.begin(115200);
@@ -68,12 +77,14 @@ void setup()
   AudioProcessorUsageMaxReset();
   AudioMemoryUsageMaxReset();
 
+// needed for Teensy Audio
   SPI.setMOSI(7);
   SPI.setSCK(14);
+  
   pinMode(10,OUTPUT); //required for SD library functions
   // If SD isn't working, not much to do.. repeatedly play sit tones followed by
   // error message audio sample from AudioSampleNoData.h
-  if (!SD.begin(chipSelect)) {
+  if (!SD.begin(6)) {
     digitalWrite(13, HIGH);
     while(true) {
       digitalWrite(13, HIGH);
@@ -86,16 +97,54 @@ void setup()
     }
   } else {
     debugMsg("SD seems to be working"); 
+    // check for a config file and read it if it exists
+    if (SD.exists("/CONFIG")) {
+      File configFile = SD.open("/CONFIG");
+      char rc;
+      String st;
+      String variable;
+      if (configFile) {
+        new String(st); 
+        while (configFile.available()) {  
+          rc = configFile.read();
+          Serial.print(rc);
+          if (rc == '=') {
+            variable = st;
+            st = String("");
+          }
+          else if (rc == '\n') {
+            // ** Put code here to handle config directives as per expected type
+            if (variable.equals("IDLE-TIMEOUT")) {
+              idleTimeoutMillis = st.toInt()*1000;
+              debugMsg(String("idleTimeoutMillis = ") + String(idleTimeoutMillis) + String(" ms"));
+            }
+            else if (variable.equals("IDLE-TIMEOUT-FILE")) {
+              st.toCharArray(idleTimeoutFile,255);
+              if (SD.exists(idleTimeoutFile)) {
+                 debugMsg(st + String(" dial-timeout file specified and found"));
+              } else {
+                idleTimeoutMillis = 0;
+                debugMsg(st + String(" dial-timeout file specified but not found"));
+              }
+            }
+            st = String("");
+          }
+          else {
+            st.concat(rc);
+          }
+        }
+      }
+    }
   }
 
   // set the detector pins to input mode
   pinMode(DIALING, INPUT_PULLUP);
   pinMode(CLICK, INPUT_PULLUP);
 
-
-  // start with a dial tone (440Hz + 350Hz)
-  sine1.begin(0.8,440.0,TONE_TYPE_SINE);
-  sine2.begin(0.8,350.0,TONE_TYPE_SINE);
+  // initialize idle timer
+  idleTimerStart=millis();
+  
+  dialTone();
 }
 
 // globals used in loop
@@ -126,8 +175,15 @@ void loop()
   value = analogRead(15);
   if (abs(value - volume) > 5) { // pot tends to alternate between close values
     volume = value;
-    debugMsg(String("volume: ") + String(volume));
+    //debugMsg(String("volume: ") + String(volume));
     codec.volume((float)volume / 1023);
+  }
+
+  if ( (idleTimeoutMillis) && (long (millis() - idleTimerStart) > idleTimeoutMillis)) {
+    idleTimeout();
+  }
+  if (sdwav.isPlaying()) { // not idle if wav is playing
+    idleTimerStart = millis();
   }
   
   dialBounce.update(); 
@@ -181,6 +237,7 @@ void loop()
   }
   else { // not dialing
     if (value == LOW) { // now we are. prepare to count
+      idleTimerStart = millis();
       if (sdwav.isPlaying()) { // no need to stop dialtone if playing a sample
         debugMsg(String("sdwav is playing"));
       }
@@ -192,6 +249,33 @@ void loop()
       count = 0;
     }
   }
+}
+
+// idleTimeout - Hush dial tone if it is playing.  Play sit tones.  If idleTimeoutFile exists, play  
+//               that.  Otherwise return to dial tone.  Reset dialedNum and sdpath and idle timer.
+void idleTimeout() {
+  AudioNoInterrupts();
+  boolean fileExists = SD.exists(idleTimeoutFile);
+  AudioInterrupts(); 
+  hushSine(); 
+  sit();    
+  if (fileExists) {
+    debugMsg(String("playing timeout file: ") + String(idleTimeoutFile));
+    sdwav.play(idleTimeoutFile);
+  }
+  else {
+    debugMsg(String("timeout file doesn't exist: ") + String(idleTimeoutFile));
+    dialTone();
+  }
+  idleTimerStart = millis();
+  dialedNum = String();
+  sdPath = "/";
+}
+
+// start a dial tone (440Hz + 350Hz)
+void dialTone() {
+  sine1.begin(0.8,440.0,TONE_TYPE_SINE);
+  sine2.begin(0.8,350.0,TONE_TYPE_SINE);
 }
 
 // check for existence of a file in the {sdPath} folder
