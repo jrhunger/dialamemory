@@ -5,8 +5,11 @@
 #include <Bounce.h>
 #include "AudioSampleNoData.h"
 #include "AudioSampleDigits.h"
+#include "MorseEncoderSine.h"
 
 /* Memory Phone
+  v5 - Add support for .mor files.  If {dialed-number}.mor exists, read any text
+      out of it and play that in Morse code.
   v4 - Add ability to traverse subdirectories on SD card.  When sample starts
       playing, use # as directory and look inside it for any subsequently-dialed #s
 
@@ -60,6 +63,11 @@ void setup()
 
   AudioProcessorUsageMaxReset();
   AudioMemoryUsageMaxReset();
+
+  Serial.print("calling sendMorse\n");
+  sendMorse(&sine1,'J');
+  Serial.print("calling testMorse\n");
+  testMorse(&sine1);
 
   SPI.setMOSI(7);
   SPI.setSCK(14);
@@ -352,3 +360,55 @@ void debugMsg(String msg) {
 void debugMsg(const char msg) {
   debugMsg(String(msg));
 }
+
+void sendMorse(AudioSynthWaveform *sineP, char sendChar)
+{
+  morseEncoderSine morseSine(sineP);
+  morseSine.setspeed(13);
+  morseSine.encode();
+  morseSine.write(sendChar);
+  morseSine.encode();
+  while (! morseSine.available()) {
+    Serial.print(",");
+    morseSine.encode();
+    delay(100);
+    Serial.print("-");
+  }
+  Serial.println("endOfSendMorse");
+}
+
+void testMorse(AudioSynthWaveform *sineP)
+{
+  unsigned long msecs = millis();
+  unsigned long nows;
+  Serial.println(msecs);
+  morseEncoderSine morseSine(sineP);
+  //Serial.println("a");
+  morseSine.setspeed(13);
+  char sendChar = 'a';
+  while (true) {
+    //Serial.println("encoding");
+    morseSine.encode();
+    //Serial.println("encoded");
+    nows = millis();
+    if ((nows - msecs) > 500) {
+      //Serial.println(".");
+    if (morseSine.available()) {
+      Serial.println("writing ");
+      Serial.println(sendChar);
+      Serial.println("\n");
+      msecs = nows;
+      morseSine.write(sendChar);
+      sendChar++;
+      if (sendChar > 'z') {
+        sendChar = 'a';
+      }
+    }
+    }
+    else {
+      //Serial.println(nows);
+    }
+    delay(10);
+  }
+}
+
