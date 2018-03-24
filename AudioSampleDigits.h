@@ -1,3 +1,6 @@
+// Audio data and from wav2sketch and helper array for accessing programatically by
+// digit parameter.
+
 // Audio data converted from WAV file by wav2sketch
 // Converted from d0.wav, using 11025 Hz, u-law encoding
 const unsigned int AudioSampleD0[2265] = {
@@ -2562,3 +2565,5 @@ AudioSampleD7,
 AudioSampleD8,
 AudioSampleD9
 };
+
+

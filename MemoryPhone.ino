@@ -6,6 +6,21 @@
 #include "AudioSampleNoData.h"
 #include "AudioSampleDigits.h"
 
+/* Memory Phone
+  v4 - Add ability to traverse subdirectories on SD card.  When sample starts
+      playing, use # as directory and look inside it for any subsequently-dialed #s
+
+  Function list:
+  ringback - play the ringing sound (parameter) # of times
+  busy - play the busy signal (does not exit, must "hang up" (power off)
+  sit - play the 3-note "sit" tone
+  hushsine - stop any sine-based tones that are playing
+  sayDigit - given int 0 to 9 as parameter, play text-to-speech of that digit
+*/
+
+// set here to force on always
+boolean debug = true;
+
 // change this to match your SD shield or module;
 // Teensy 3.1 Audio Shield = 6
 const int chipSelect = 6;  
@@ -20,7 +35,7 @@ AudioOutputI2S audioOut;
 AudioConnection c0(sine1, 0, mixer1, 0);
 AudioConnection c1(sine2, 0, mixer1, 1);
 AudioConnection c2(sdwav, 0, mixer1, 2);
-AudioConnection c3(memplay, 0, mixer1, 2);
+AudioConnection c3(memplay, 0, mixer1, 3);
 
 AudioConnection c4(mixer1, 0, audioOut, 0);
 AudioConnection c5(mixer1, 0, audioOut, 1);
@@ -36,7 +51,7 @@ int volume = 512;
 
 void setup()
 {
-//  Serial.begin(115200);
+  Serial.begin(115200);
   pinMode(13,OUTPUT);
   
   AudioMemory(5);
@@ -63,7 +78,21 @@ void setup()
       }   
     }
   } else {
-    //Serial.println("Wiring is correct and a card is present."); 
+    debugMsg("Wiring is correct and a card is present."); 
+  }
+  
+  File dataFile = SD.open("README.txt");
+
+  // if the file is available, read it to serial:
+  if (dataFile) {
+    while (dataFile.available()) {
+      Serial.write(dataFile.read());
+    }
+    dataFile.close();
+  }
+  // if the file isn't open, pop up an error:
+  else {
+    Serial.println("error opening README.txt");
   }
   
   pinMode(DIALING, INPUT_PULLUP);
@@ -85,13 +114,16 @@ int value;
 unsigned long last_perf = 0;
 unsigned long last_busy = 0;
 String dialedNum = String();
+String sdPath = "/";
+boolean sayDigitsEnabled = false;
 
 void loop()
 {
   // read analog volume and set output volume accordingly
   value = analogRead(15);
-  if (value != volume) {
+  if (abs(value - volume) > 5) { // pot tends to alternate between close values
     volume = value;
+    debugMsg(String("volume: ") + String(volume));
     codec.volume((float)volume / 1023);
   }
   
@@ -102,30 +134,44 @@ void loop()
     if (value == HIGH) { // not dialing any more, so let's see what was dialed
       dialing = false;
       if (count == 0) {  // no clicks counted is an error ##TODO: maybe add a message
-        sit();
+        debugMsg("0 clicks: enabling audio digits, clearing dialed #");
+        sayDigitsEnabled = true;
+        dialedNum = String();
       }
-      if (count == 10) { // dialing 0 == 10 clicks
-        count = 0;
+      else {
+        if (count == 10) { // dialing 0 == 10 clicks
+          count = 0;
+        }
+        debugMsg(String(count));
+        sayDigit(count);
+        dialedNum = String(dialedNum + String(count)); // append dialed digit to the number dialed
       }
-      sayDigit(count);
-      dialedNum = String(dialedNum + String(count)); // append dialed digit to the number dialed
 // If someone has dialed too many digits without matching, encourage them to start over
       if (dialedNum.length() > 10) { 
         busy();
       }
 //      Serial.println(dialedNum);
 // See if there is an audio file for the number that has been dialed so far
-      String fileStr = String(dialedNum + ".wav"); 
-      char file[14];
-      fileStr.toCharArray(file,13);
-      if (SD.exists(file)) {
+      String fileStr = String(sdPath + dialedNum + ".wav"); 
+      if (fileStr.length() > 255) {
+        busy();
+      }
+      char file[256];
+      fileStr.toCharArray(file,255);
+      // Disable audio interrupts while checking SD in case sdwav is running
+      AudioNoInterrupts();
+      boolean numFileExists = SD.exists(file);
+      AudioInterrupts();
+      
+      if (numFileExists) {
+        sdPath.concat(dialedNum + "/");
+        dialedNum = String();
         ringback(1);  // plays the ringing sound
+        debugMsg(String("playing file: ") + String(file));
         sdwav.play(file); // and then the file   
       }
       else { // dialed # does not correspond to an audio file
-//        Serial.print("no file: '");
-//        Serial.print(file);
-//        Serial.println("'");
+        debugMsg("no file: " + fileStr);
       }
     }
     else { // dial pin is still low == we are dialing, so count clicks
@@ -141,7 +187,12 @@ void loop()
   }
   else { // not dialing
     if (value == LOW) { // now we are. prepare to count
-      hushSine();
+      if (sdwav.isPlaying()) { // no need to stop dialtone if playing a sample
+        debugMsg(String("sdwav is playing"));
+      }
+      else {
+        hushSine();
+      }
       dialing = true;
       clicking = false;
       count = 0;
@@ -150,6 +201,7 @@ void loop()
   
   // can't remember where i stole this from, probably teensy audio examples
   // if a serial is attached, it will output some profiling info every 5 sec
+  /*
   if(millis() - last_perf >= 5000) {
     if(Serial) {
       Serial.print("Proc = ");
@@ -164,6 +216,7 @@ void loop()
     }  
     last_perf = millis();
   } 
+  */
 }
 
 // ringback is the sound you hear in the phone when the other end is ringing
@@ -173,6 +226,7 @@ void loop()
 // which the function returns.
 void ringback(int count)
 {
+  debugMsg(String("ringback-") + String(count));
   elapsedMillis sinceBuzz = 0;
   sine1.begin(0.4,440.0,TONE_TYPE_SINE);
   sine2.begin(0.4,480.4,TONE_TYPE_SINE);
@@ -196,16 +250,12 @@ void ringback(int count)
 }
 
 void hushSine() {
+  debugMsg("hushSine");
   sine1.begin(0,0,TONE_TYPE_SINE);
   sine2.begin(0,0,TONE_TYPE_SINE);
 }
 
-void sayDigit(int digit) {
-  memplay.play(AudioSampleDigits[digit]);
-  while (memplay.isPlaying()) {
-    delay(20);
-  } 
-}  
+
   
 // The busy signal is composed of two tones (620 and 480 Hz) at a cadence
 // of .5s on and .5s off.  This function never exits because we expect
@@ -251,9 +301,7 @@ durations used on a given call is used to indicate why the call
 did not complete.
 */
 void sit() {
-  if(Serial) {
-      Serial.print("sit\n");
-  }
+  debugMsg("sit");
       
   elapsedMillis since = 0;
   byte phase = 0;
@@ -279,3 +327,28 @@ void sit() {
   }
 }
   
+// Given a digit from 0 to 9, play the corresponding audio sample
+// uses the data from AudioSampleDigits.h
+// requires initialized memplay global variable
+void sayDigit(int digit) {
+  if (!sayDigitsEnabled) {
+    return;
+  }
+  if ((digit > 0) && (digit < 10)) {  // only play digits we can..
+    memplay.play(AudioSampleDigits[digit]);
+    while (memplay.isPlaying()) {
+      delay(20);
+    } 
+  }
+}  
+
+// Handle debug messages appropriately
+// If Serial is initialized, print there.
+void debugMsg(String msg) {
+  if(debug) {
+    Serial.println(msg);
+  }
+}
+void debugMsg(const char msg) {
+  debugMsg(String(msg));
+}

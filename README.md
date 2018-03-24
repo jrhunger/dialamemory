@@ -7,3 +7,4 @@ Pre-Git version log:
 - 2015/06/14 - 0.2.0 aka MemoryPhone2
 - 2016/02/07 - 0.3.0 aka MemoryPhone3
   - Add Audio Samples for digits and "no data", plus ability to say digits while dialing.
+- 2016/02/22 - 0.4.0 aka MemoryPhone4
