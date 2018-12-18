@@ -9,7 +9,13 @@
 #include "SDMorse.h"
 
 /* Memory Phone
-  v7 - Add support for a timeout message after dial tone plays for too long
+  v1.1 - New functionality to support choose-your-own-adventure
+       * change checkNumFile from boolean to int return to indicate desired dialer behavior         
+       * Support new file types:
+         * .CLR (clear dialed digits)
+         * .END (dead-end - play busy tone)
+         * .GO2 (play a WAV in a different directory, change path to that)
+  v7 (1.0) - Add support for a timeout message after dial tone plays for too long
        Add support for a config file on the SD card to set certain parameters
        * DIAL-TIMEOUT - # of seconds to wait before playing timeout message
        * DIAL-TIMEOUT-MESSAGE - filename to play after dial timeout
@@ -27,6 +33,7 @@
   sit - play the 3-note "sit" tone
   hushsine - stop any sine-based tones that are playing
   sayDigit - given int 0 to 9 as parameter, play text-to-speech of that digit
+  file2String - read a file into a string (intended for short config files, etc.)
 */
 
 // set here to force on always
@@ -55,10 +62,14 @@ AudioControlSGTL5000 codec;
 
 int volume = 512;
 
+//test rig
+#define DIALING 4
+#define CLICK 5
+
 // yellow
-#define DIALING 24
+//#define DIALING 24
 // blue
-#define CLICK 26
+//#define CLICK 26
 
 // Used for idle timeout
 long idleTimeoutMillis = 0;  // 0 = disabled, nonzero = # of millis to wait before playing timeout file
@@ -168,6 +179,7 @@ String sdPath = "/";
 // when this is true, each digit will be spoken right after it is dialed
 boolean sayDigitsEnabled = false;
 // keep track of last user action
+char checkval;
 
 void loop()
 {
@@ -215,13 +227,38 @@ void loop()
         busy();
       }
       debugMsg(String("checking file for ") + dialedNum);
-      if (checkNumFile(sdPath, dialedNum)) {
-        // found something to play, so get ready for next #
-        sdPath.concat(dialedNum + "/");
-        dialedNum = String();
-      }
-      else {
-        debugMsg(dialedNum + String(" file not found"));
+      checkval = checkNumFile(sdPath, dialedNum);
+      debugMsg("checkNumFile returns " + String(checkval + 47));
+      switch(checkval) {
+        case 0:
+          // nothing found
+          debugMsg(dialedNum + String(" file not found"));
+          break;
+        case 1:
+          // something is playing, get ready for next #
+          sdPath.concat(dialedNum + "/");
+          debugMsg("sdPath = " + sdPath);
+          dialedNum = String();
+          break;
+        case 2:
+          // clear dialing digits
+          dialedNum = String();
+          break;
+        case 3:
+          // dead-end - play busy
+          debugMsg("dead-end - busy");
+          busy();
+          break;
+        case 4:
+          // redirect - read .go2 file and change path accordingly
+          sdPath = file2String(String(sdPath + dialedNum + ".go2"));
+          sdPath = sdPath.substring(0,sdPath.lastIndexOf(".")) + "/";
+          debugMsg("new sdPath: " + sdPath);
+          dialedNum = String();
+          break;
+        default:
+          debugMsg(String("unexpected return from checkNumFile()"));
+          break;
       }
     }
     else { // dial pin is still low == we are dialing, so count clicks
@@ -278,20 +315,29 @@ void dialTone() {
   sine2.begin(0.8,350.0,TONE_TYPE_SINE);
 }
 
-// check for existence of a file in the {sdPath} folder
-// named {digits}.(wav|mor|num) in that order of preference
-// and handle it appropriately depending on the extension
-boolean checkNumFile(String sdPath, String digits) {
+/* check for existence of a file in the {sdPath} folder
+   named {digits}.(wav|mor|num|clr|end|go2) in that order of preference
+   and handle it appropriately depending on the extension
+   v1.1 - change to byte for different return values/behavior
+   * 0 - not found
+   * 1 - found, being handled, append digits to path as folder (.wav/mor/num)
+   * 2 - clear dialing digits (.clr)
+   * 3 - dead end (.end)
+   * 4 - redirect (.go2) - implies that {sdPath}/{digits}.go2 exists and can be read for path
+*/
+byte checkNumFile(String sdPath, String digits) {
   String fileStr;
   char file[256];
   boolean fileExists;
   debugMsg(String("checkNumFile: ") + sdPath + digits);
 
+// check length
+  if (fileStr.length() + digits.length() +4 > 255) {
+    return 3; //end - too long
+  }
+
 // ** .wav files get played with sdwav.play()
   fileStr = String(sdPath + digits + ".wav"); 
-  if (fileStr.length() > 255) {
-    busy();
-  }
   fileStr.toCharArray(file,255);
   // Disable audio interrupts while checking SD in case sdwav is running
   AudioNoInterrupts();
@@ -301,18 +347,14 @@ boolean checkNumFile(String sdPath, String digits) {
     ringback(1);  // plays the ringing sound
     debugMsg(String("playing file: ") + String(file));
     sdwav.play(file); // and then the file
-    return true;   
+    return 1;
   }
   else {
     debugMsg(String("no file: ") + String(file));
   }
 
-// if you get here, no .wav file so try again with .mor
 // .mor files get handled by SDMorse (from SDMorse.h)
   fileStr = String(sdPath + digits + ".mor"); 
-  if (fileStr.length() > 255) {
-    busy();
-  } 
   fileStr.toCharArray(file,255);
   // Disable audio interrupts while checking SD in case sdwav is running
   AudioNoInterrupts();
@@ -322,18 +364,14 @@ boolean checkNumFile(String sdPath, String digits) {
     ringback(1);  // plays the ringing sound
     debugMsg(String("Sending Morse File: ") + String(file));
     SDMorse(&sine1, file);
-    return true;   
+    return 1;   
   }
   else {
     debugMsg(String("no file: ") + String(file));
   }
 
-// if you get here, no .wav or .mor file so try again with .num
 // .num files are handled by local function SDSayDigits()
   fileStr = String(sdPath + digits + ".num"); 
-  if (fileStr.length() > 255) {
-    busy();
-  }  
   fileStr.toCharArray(file,255);
   // Disable audio interrupts while checking SD in case sdwav is running
   AudioNoInterrupts();
@@ -343,12 +381,63 @@ boolean checkNumFile(String sdPath, String digits) {
     ringback(1);  // plays the ringing sound
     debugMsg(String("Saying Number file: ") + String(file));
     SDSayDigits(file);
-    return true;   
+    return 1;   
   }
-  else {
-   debugMsg(String("no file: ") + String(file));
+
+// .clr not handled, just return 2
+  fileStr = String(sdPath + digits + ".clr"); 
+  fileStr.toCharArray(file,255);
+  // Disable audio interrupts while checking SD in case sdwav is running
+  AudioNoInterrupts();
+  fileExists = SD.exists(file);
+  AudioInterrupts();      
+  if (fileExists) {    
+    debugMsg(String("clear: ") + String(file));
+    return 2;  
   }
-  return false;
+
+// .end not handled, just return 3
+  fileStr = String(sdPath + digits + ".end"); 
+  fileStr.toCharArray(file,255);
+  // Disable audio interrupts while checking SD in case sdwav is running
+  AudioNoInterrupts();
+  fileExists = SD.exists(file);
+  AudioInterrupts();      
+  if (fileExists) {    
+    debugMsg(String("dead-end: ") + String(file));
+    return 3;  
+  }
+
+// .go2 - read file to determine target directory and file
+  fileStr = String(sdPath + digits + ".go2"); 
+  fileStr.toCharArray(file,255);
+  // Disable audio interrupts while checking SD in case sdwav is running
+  AudioNoInterrupts();
+  fileExists = SD.exists(file);
+  AudioInterrupts();      
+  if (fileExists) {    
+    debugMsg(String("go2: ") + String(file));
+    fileStr = file2String(file); 
+    debugMsg("going to: '" + fileStr +"'");  
+    fileStr.toCharArray(file,255);
+    AudioNoInterrupts();
+    fileExists = SD.exists(file);
+    AudioInterrupts(); 
+    if (fileExists) {
+      ringback(1);  // plays the ringing sound
+      debugMsg(String("playing file: ") + String(file));
+      sdwav.play(file);
+      return 4;
+    }
+    else {
+      debugMsg(String(file) + " doesn't exist");
+      return 2; // just clear dialing if target file doesn't exist
+    }  
+  }
+
+  // all previous conditionals return so if we reach this, nothing found
+  debugMsg(String("no file: ") + String(file));
+  return 0;
 }
 
 // ringback is the sound you hear in the phone when the other end is ringing
@@ -404,11 +493,13 @@ void busy()
       sine2.begin(0,0,TONE_TYPE_SINE);
       sinceBuzz = 0;
       on = false;
+      debugMsg("off");
     } 
     else if (! on && sinceBuzz >= 250) {
       sine1.begin(0.8,620.0,TONE_TYPE_SINE);
       sine2.begin(0.8,480.0,TONE_TYPE_SINE);
       on = true;
+      debugMsg("on");
     }
   }    
 }
@@ -471,6 +562,41 @@ void sayDigit(int digit) {
   }
 }  
 
+// file2String - Read a file on SD card, return contents as a string
+String file2String(String fileName) {
+  char file[256];
+  fileName.toCharArray(file,255);
+  return(file2String(file));
+}
+
+// file2String - Read a file on SD card, return contents as a string
+String file2String(char *fileName) {
+  String rstring = String("");
+  char rc;
+  AudioNoInterrupts();
+  File rfile = SD.open(fileName);
+  AudioInterrupts();
+  if (rfile) {
+    debugMsg(String("opened ") + String(fileName));
+    while (rfile.available()) {
+      AudioNoInterrupts();
+      rc = rfile.read();
+      AudioInterrupts();
+      debugMsg(rc);
+      if ((rc > 31) && (rc < 127)) {
+        rstring.concat(rc);
+      } 
+      else {
+        debugMsg("skipping bad char '" + String(rc) + "'");
+      }
+    }
+  } else {
+    debugMsg(String("unable to open ") + String(fileName));
+  }
+  
+  return(rstring);
+}
+
 // SDSayDigits - Read a file on the SD Card, and "speak" any digits found in it using
 // sayDigit()
 void SDSayDigits(char *numFilename) {
@@ -485,8 +611,7 @@ void SDSayDigits(char *numFilename) {
         sayDigit(int(rc - 48));
       }
     }
-  }
-  else {
+  } else {
     debugMsg(String("unable to open ") + String(numFilename));
   }
 }
