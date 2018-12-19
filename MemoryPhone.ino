@@ -9,12 +9,12 @@
 #include "SDMorse.h"
 
 /* Memory Phone
-  v1.1 - New functionality to support choose-your-own-adventure
-       * change checkNumFile from boolean to int return to indicate desired dialer behavior         
-       * Support new file types:
-         * .CLR (clear dialed digits)
-         * .END (dead-end - play busy tone)
-         * .GO2 (play a WAV in a different directory, change path to that)
+  1.1.0 - New functionality to support choose-your-own-adventure
+        * change checkNumFile from boolean to int return to indicate desired dialer behavior         
+        * Support new file types:
+          * .CLR (clear dialed digits)
+          * .END (dead-end - play busy tone)
+          * .GO2 (play a WAV in a different directory, change path to that)
   v7 (1.0) - Add support for a timeout message after dial tone plays for too long
        Add support for a config file on the SD card to set certain parameters
        * DIAL-TIMEOUT - # of seconds to wait before playing timeout message
@@ -63,13 +63,14 @@ AudioControlSGTL5000 codec;
 int volume = 512;
 
 //test rig
-#define DIALING 4
-#define CLICK 5
+//#define DIALING 4
+//#define CLICK 5
 
+// for wire-soldered version
 // yellow
-//#define DIALING 24
+#define DIALING 24
 // blue
-//#define CLICK 26
+#define CLICK 26
 
 // Used for idle timeout
 long idleTimeoutMillis = 0;  // 0 = disabled, nonzero = # of millis to wait before playing timeout file
