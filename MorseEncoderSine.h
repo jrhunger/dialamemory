@@ -17,6 +17,7 @@ pluggable output refactoring:
 */
 
 #include <MorseEnDecoder.h>
+#include <Audio.h>
 
 /** provide an alternate implementation to the default digitalWrite with tone and text instead 
 */
@@ -43,7 +44,7 @@ morseEncoderSine::morseEncoderSine(AudioSynthWaveform *sineP)
   sinePointer = sineP;
   sineAmp = 0.7;
   sineFreq = 880;
-  (*sinePointer).begin(0,0,TONE_TYPE_SINE);
+  (*sinePointer).begin(0,0,WAVEFORM_SINE);
 }
 
 void morseEncoderSine::toneOn()
@@ -94,4 +95,3 @@ void morseEncoderSine::stop_signal(bool endOfChar, char signalType)
     Serial.print(' ');
   }
 }
-

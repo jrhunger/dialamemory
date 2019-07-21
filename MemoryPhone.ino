@@ -312,8 +312,8 @@ void idleTimeout() {
 
 // start a dial tone (440Hz + 350Hz)
 void dialTone() {
-  sine1.begin(0.8,440.0,TONE_TYPE_SINE);
-  sine2.begin(0.8,350.0,TONE_TYPE_SINE);
+  sine1.begin(0.8,440.0,WAVEFORM_SINE);
+  sine2.begin(0.8,350.0,WAVEFORM_SINE);
 }
 
 /* check for existence of a file in the {sdPath} folder
@@ -450,21 +450,21 @@ void ringback(int count)
 {
   debugMsg(String("ringback-") + String(count));
   elapsedMillis sinceBuzz = 0;
-  sine1.begin(0.4,440.0,TONE_TYPE_SINE);
-  sine2.begin(0.4,480.4,TONE_TYPE_SINE);
+  sine1.begin(0.4,440.0,WAVEFORM_SINE);
+  sine2.begin(0.4,480.4,WAVEFORM_SINE);
   boolean on = true;
   int i=0;
   while (i < count)
   {
     if(!on && sinceBuzz >= 6000) {
-      sine1.begin(0.4,440.0,TONE_TYPE_SINE);
-      sine2.begin(0.4,480.0,TONE_TYPE_SINE);
+      sine1.begin(0.4,440.0,WAVEFORM_SINE);
+      sine2.begin(0.4,480.0,WAVEFORM_SINE);
       sinceBuzz = 0;
       on = true;
     } 
     else if (on && sinceBuzz >= 2000) {
-      sine1.begin(0,0,TONE_TYPE_SINE);
-      sine2.begin(0,0,TONE_TYPE_SINE);
+      sine1.begin(0,0,WAVEFORM_SINE);
+      sine2.begin(0,0,WAVEFORM_SINE);
       on = false;
       i++;
     }
@@ -474,8 +474,8 @@ void ringback(int count)
 // set amplitude and frequency of both sines (AudioSynthWaveforms) to 0 
 void hushSine() {
   debugMsg("hushSine");
-  sine1.begin(0,0,TONE_TYPE_SINE);
-  sine2.begin(0,0,TONE_TYPE_SINE);
+  sine1.begin(0,0,WAVEFORM_SINE);
+  sine2.begin(0,0,WAVEFORM_SINE);
 }
   
 // The busy signal is composed of two tones (620 and 480 Hz) at a cadence
@@ -484,21 +484,21 @@ void hushSine() {
 void busy()
 {
   elapsedMillis sinceBuzz = 0;
-  sine1.begin(0,0,TONE_TYPE_SINE);
-  sine2.begin(0,0,TONE_TYPE_SINE);
+  sine1.begin(0,0,WAVEFORM_SINE);
+  sine2.begin(0,0,WAVEFORM_SINE);
   boolean on = false;
   while (true)
   {
     if(on && sinceBuzz >= 500) {
-      sine1.begin(0,0,TONE_TYPE_SINE);
-      sine2.begin(0,0,TONE_TYPE_SINE);
+      sine1.begin(0,0,WAVEFORM_SINE);
+      sine2.begin(0,0,WAVEFORM_SINE);
       sinceBuzz = 0;
       on = false;
       debugMsg("off");
     } 
     else if (! on && sinceBuzz >= 250) {
-      sine1.begin(0.8,620.0,TONE_TYPE_SINE);
-      sine2.begin(0.8,480.0,TONE_TYPE_SINE);
+      sine1.begin(0.8,620.0,WAVEFORM_SINE);
+      sine2.begin(0.8,480.0,WAVEFORM_SINE);
       on = true;
       debugMsg("on");
     }
@@ -529,22 +529,22 @@ void sit() {
   elapsedMillis since = 0;
   byte phase = 0;
   // Start playing tone 1
-  sine1.begin(0.8,913.8,TONE_TYPE_SINE);
-  sine2.begin(0,0,TONE_TYPE_SINE);
+  sine1.begin(0.8,913.8,WAVEFORM_SINE);
+  sine2.begin(0,0,WAVEFORM_SINE);
   while (phase < 3) {
     if ((phase == 0) && (since >= 380)) {
-      sine1.begin(0.8,1428.5,TONE_TYPE_SINE);
-      sine2.begin(0,0,TONE_TYPE_SINE);
+      sine1.begin(0.8,1428.5,WAVEFORM_SINE);
+      sine2.begin(0,0,WAVEFORM_SINE);
       phase = 1;
     }
     // sum of first two tone durations 380 + 274 = 654
     if ((phase == 1) && (since >= 654)) {
-      sine1.begin(0.8,1776.7,TONE_TYPE_SINE);
+      sine1.begin(0.8,1776.7,WAVEFORM_SINE);
       phase = 2;
     }
     // sum of all three tone durations 380 + 274 + 380 = 1034
     if ((phase == 2) && (since >= 1034)) {
-      sine1.begin(0,0,TONE_TYPE_SINE);
+      sine1.begin(0,0,WAVEFORM_SINE);
       phase = 3;
     }
   }
