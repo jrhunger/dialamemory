@@ -7,8 +7,10 @@
 #include "AudioSampleDigits.h"
 #include "MorseEncoderSine.h"
 #include "SDMorse.h"
+#include "hardware-cc.h"
 
 /* Memory Phone
+  1.1.1 - Combine code for internal (direct wire) and external (SLIC) hardware
   1.1.0 - New functionality to support choose-your-own-adventure
         * change checkNumFile from boolean to int return to indicate desired dialer behavior         
         * Support new file types:
@@ -17,8 +19,8 @@
           * .GO2 (play a WAV in a different directory, change path to that)
   v7 (1.0) - Add support for a timeout message after dial tone plays for too long
        Add support for a config file on the SD card to set certain parameters
-       * DIAL-TIMEOUT - # of seconds to wait before playing timeout message
-       * DIAL-TIMEOUT-MESSAGE - filename to play after dial timeout
+       * IDLE-TIMEOUT - # of seconds to wait before playing timeout message
+       * IDLE-TIMEOUT-MESSAGE - filename to play after dial timeout
   v6 - Add support for .num files. If {dialed-number}.num exists, read it and
        say any digits in it using the samples in AudioSampleDigits.h
        Move file checking to its own function.
@@ -36,43 +38,28 @@
   file2String - read a file into a string (intended for short config files, etc.)
 */
 
+// Audtio Definitions: import/edit/export at https://www.pjrc.com/teensy/gui/
+// GUItool: begin automatically generated code
+AudioPlaySdWav           sdwav;          //xy=503.3333435058594,261
+AudioSynthWaveform       sine2;          //xy=506.3333435058594,212
+AudioSynthWaveform       sine1;          //xy=509.3333435058594,157
+AudioPlayMemory          memplay;        //xy=511.3333435058594,307
+AudioMixer4              mixer1;         //xy=726.3333435058594,233
+AudioOutputI2S           audioOut;       //xy=946.3333435058594,245.00001049041748
+AudioConnection          patchCord1(sdwav, 0, mixer1, 2);
+AudioConnection          patchCord2(sine2, 0, mixer1, 1);
+AudioConnection          patchCord3(sine1, 0, mixer1, 0);
+AudioConnection          patchCord4(memplay, 0, mixer1, 3);
+AudioConnection          patchCord5(mixer1, 0, audioOut, 0);
+AudioConnection          patchCord6(mixer1, 0, audioOut, 1);
+AudioControlSGTL5000     codec;          //xy=520.3333435058594,417
+// GUItool: end automatically generated code
+
 // set here to force on always
 boolean debug = true;
+int volume = INITIAL_VOLUME;
 
-// change this to match your SD shield or module;
-// Teensy 3.1 Audio Shield = 6
-const int chipSelect = 6;  
-AudioPlaySdWav sdwav;
-AudioPlayMemory memplay;
-
-AudioSynthWaveform sine1;
-AudioSynthWaveform sine2;
-
-AudioMixer4 mixer1;
-AudioOutputI2S audioOut;
-AudioConnection c0(sine1, 0, mixer1, 0);
-AudioConnection c1(sine2, 0, mixer1, 1);
-AudioConnection c2(sdwav, 0, mixer1, 2);
-AudioConnection c3(memplay, 0, mixer1, 3);
-
-AudioConnection c4(mixer1, 0, audioOut, 0);
-AudioConnection c5(mixer1, 0, audioOut, 1);
-
-AudioControlSGTL5000 codec;
-
-int volume = 512;
-
-//test rig
-//#define DIALING 4
-//#define CLICK 5
-
-// for wire-soldered version
-// yellow
-#define DIALING 24
-// blue
-#define CLICK 26
-
-// Used for idle timeout
+// Idle timeout variables. The main way to control this is with a CONFIG file
 long idleTimeoutMillis = 0;  // 0 = disabled, nonzero = # of millis to wait before playing timeout file
 char idleTimeoutFile[256];
 long idleTimerStart;
@@ -80,28 +67,29 @@ long idleTimerStart;
 void setup()
 {
   Serial.begin(115200);
-  pinMode(13,OUTPUT);
+  pinMode(ACTIVITY_LED,OUTPUT);
   
   AudioMemory(5);
   codec.enable();
-  codec.volume((float)volume / 1023);
+  output_volume(volume);
 
   AudioProcessorUsageMaxReset();
   AudioMemoryUsageMaxReset();
 
 // needed for Teensy Audio
-  SPI.setMOSI(7);
-  SPI.setSCK(14);
+  SPI.setMOSI(SD_MOSI);
+  SPI.setSCK(SD_SCLK);
+//TODO - setting constants based on hardware.h
   
-  pinMode(10,OUTPUT); //required for SD library functions
+  pinMode(10,OUTPUT); // required for SD library functions
   // If SD isn't working, not much to do.. repeatedly play sit tones followed by
   // error message audio sample from AudioSampleNoData.h
-  if (!SD.begin(6)) {
-    digitalWrite(13, HIGH);
+  if (!SD.begin(SD_CS)) {
+    digitalWrite(ACTIVITY_LED, HIGH);
     while(true) {
-      digitalWrite(13, HIGH);
+      digitalWrite(ACTIVITY_LED, HIGH);
       sit();
-      digitalWrite(13, LOW);
+      digitalWrite(ACTIVITY_LED, LOW);
       memplay.play(AudioSampleNodata);
       while (memplay.isPlaying()) {
         delay(20);
@@ -150,8 +138,14 @@ void setup()
   }
 
   // set the detector pins to input mode
+  #if defined(DIAL_INPUT_DIRECT)
   pinMode(DIALING, INPUT_PULLUP);
   pinMode(CLICK, INPUT_PULLUP);
+  #endif
+  
+  #if defined(DIAL_INPUT_SLIC)
+  pinMode(HOOK, INPUT_PULLUP)
+  #endif
 
   // initialize idle timer
   idleTimerStart=millis();
@@ -159,14 +153,19 @@ void setup()
   dialTone();
 }
 
-// globals used in loop
-// used to debounce the two inputs
-Bounce dialBounce = Bounce(DIALING, 25);
-Bounce clickBounce = Bounce(CLICK, 25);
+//// globals used in loop
+// used to debounce the inputs
+#if defined(DIAL_INPUT_DIRECT)
+Bounce dialBounce = Bounce(DIALING, DIAL_BOUNCE_MS);
+Bounce clickBounce = Bounce(CLICK, CLICK_BOUNCE_MS);
+#endif
+#if defined(DIAL_INPUT_SLIC)
+Bounce hookBounce = Bounce(HOOK, 25);
+#endif
 // dialing is true when the dial has been moved from its resting position
 boolean dialing = false;
-// clicking is true when in the middle of a dialing pulse
-boolean clicking = false;
+// offHook is true when in the middle of a dialing pulse
+boolean offHook = false;
 // used to count the clicks/pulses
 int count = 0;
 // used for analog reads
@@ -185,11 +184,11 @@ char checkval;
 void loop()
 {
   // read analog volume and set output volume accordingly
-  value = analogRead(15);
-  if (abs(value - volume) > 5) { // pot tends to alternate between close values
+  value = analogRead(VOLUME_POT);
+  if (abs(value - volume) > VOLUME_POT_THRESHOLD) { // pot tends to alternate between close values
     volume = value;
     //debugMsg(String("volume: ") + String(volume));
-    codec.volume((float)volume / 1023);
+    output_volume(volume);
   }
 
   if ( (idleTimeoutMillis) && (long (millis() - idleTimerStart) > idleTimeoutMillis)) {
@@ -198,78 +197,27 @@ void loop()
   if (sdwav.isPlaying()) { // not idle if wav is playing
     idleTimerStart = millis();
   }
-  
+
+//// Main dial detect part of loop. Completely different logic for DIRECT and SLIC
+// DIRECT has separate inputs for DIALING (dial moved from starting position) 
+// and CLICK (dial passing digit on the way back)
+#if defined(DIAL_INPUT_DIRECT)
   dialBounce.update(); 
   value = dialBounce.read();
   if (dialing) {
     clickBounce.update();
     if (value == HIGH) { // not dialing any more, so let's see what was dialed
       dialing = false;
-      // If count is 0, dial was moved from resting position, but not far enough to trigger
-      // the single pulse for 1.  Use this as a secret input, to enable debug output.
-      // TODO: check for previously dialed digit(s) to activate different debug/diag behavior
-      if (count == 0) {  
-        debugMsg("0 clicks: enabling audio digits, clearing dialed #");
-        sayDigitsEnabled = true;
-        dialedNum = String();
-      }
-      else { //nonzero # of pulses/clicks
-        if (count == 10) { // dialing 0 == 10 clicks
-          count = 0;
-        }
-        debugMsg(String(count));
-        if (sayDigitsEnabled) {
-          sayDigit(count);
-        }
-        dialedNum = String(dialedNum + String(count)); // append dialed digit to the number dialed
-      }
-// If someone has dialed too many digits without matching, encourage them to start over
-      if (dialedNum.length() > 10) { 
-        busy();
-      }
-      debugMsg(String("checking file for ") + dialedNum);
-      checkval = checkNumFile(sdPath, dialedNum);
-      debugMsg("checkNumFile returns " + String(checkval + 47));
-      switch(checkval) {
-        case 0:
-          // nothing found
-          debugMsg(dialedNum + String(" file not found"));
-          break;
-        case 1:
-          // something is playing, get ready for next #
-          sdPath.concat(dialedNum + "/");
-          debugMsg("sdPath = " + sdPath);
-          dialedNum = String();
-          break;
-        case 2:
-          // clear dialing digits
-          dialedNum = String();
-          break;
-        case 3:
-          // dead-end - play busy
-          debugMsg("dead-end - busy");
-          busy();
-          break;
-        case 4:
-          // redirect - read .go2 file and change path accordingly
-          sdPath = file2String(String(sdPath + dialedNum + ".go2"));
-          sdPath = sdPath.substring(0,sdPath.lastIndexOf(".")) + "/";
-          debugMsg("new sdPath: " + sdPath);
-          dialedNum = String();
-          break;
-        default:
-          debugMsg(String("unexpected return from checkNumFile()"));
-          break;
-      }
+      processDigit();
     }
     else { // dial pin is still low == we are dialing, so count clicks
       value = clickBounce.read();
-      if (clicking && (value == HIGH)) { // low to high transition == end of click
+      if (offHook && (value == HIGH)) { // low to high transition == end of click
         count++;
-        clicking = false;
+        offHook = false;
       }
-      if (! clicking && (value == LOW)) { // high to low transition == start of click
-        clicking = true;
+      if (! offHook && (value == LOW)) { // high to low transition == start of click
+        offHook = true;
       }
     }      
   }
@@ -283,9 +231,133 @@ void loop()
         hushSine();
       }
       dialing = true;
-      clicking = false;
+      offHook = false;
       count = 0;
     }
+  }
+// SLIC only has one input (HOOK)and has to do everything with timing
+#elif defined(DIAL_INPUT_SLIC)
+  hookBounce.update(); 
+  value = hookBounce.read();
+  if (value == HIGH) {
+    if (hook == LOW) { // ON to OFF-HOOK
+      //debugMsg("on to off-hook");
+      hook = HIGH;
+      if (dialing) { // end of click
+        debugMsg(".");
+        count++;
+      } else if ((long(millis() - lastChange) <= MAXCLICK)) { // assume first click, so dialing
+        debugMsg("dialing");
+        dialing = true;
+        count = 1; // since this was a click
+        dialedNum = String();
+        if (sdwav.isPlaying()) { // no need to stop dialtone if playing a sample
+          debugMsg(String("sdwav is playing"));
+        }
+        else {
+          hushSine();
+        }
+      } else { // picked up handle, we assume
+        debugMsg("picked up");
+        offHook = true;
+        dialTone();
+        sdPath = "/";
+      }
+      lastChange = millis();
+    } else {           // remaining OFF-HOOK
+      if (dialing) {
+        if (long(millis() - lastChange) > MAXCLICKINTERVAL) { // End of Digit
+          dialing = false;
+          debugMsg(count);
+          processDigit();
+        }
+      }
+      if ( (idleTimeoutMillis) && (long (millis() - idleTimerStart) > idleTimeoutMillis)) {
+        idleTimeout();
+      }
+      if (sdwav.isPlaying()) { // not idle if wav is playing
+        idleTimerStart = millis();
+      }
+    }
+  }
+  else { //value == LOW
+    if (hook == HIGH) { // OFF to ON-HOOK
+      hook = LOW;
+      lastChange = millis();
+    }
+    else {              // remaining ON-HOOK
+      if (offHook && (long(millis() - lastChange) > MAXCLICK)) { // too long for a click, must not be dialing
+        debugMsg("on hook longer than MAXCLICK");
+        offHook = false;
+        hushSine();
+        sdwav.stop();
+      }
+      if (millis() > 86400000) { // if powered on and on-hook for 1 day, reset
+        restartTeensy();
+      }
+    }
+  }
+#else
+  #error "Either DIAL_INPUT_DIRECT or DIAL_INPUT_SLIC must be defined"
+#endif
+}
+
+void processDigit() {
+  if (count == 10) { // dialing 0 == 10 clicks
+    count = 0;
+  }
+  debugMsg(String(count));
+  if (sayDigitsEnabled) {
+    sayDigit(count);
+  }
+  dialedNum = String(dialedNum + String(count)); // append dialed digit to the number dialed
+  
+  // If count is 0, dial was moved from resting position, but not far enough to trigger
+  // the single pulse for 1.  Use this as a secret input, to enable debug output.
+  // Only relevant for DIAL_INPUT_DIRECT due to extra "DIALING" input
+  // TODO: check for previously dialed digit(s) to activate different debug/diag behavior
+  if (count == 0) {  
+    debugMsg("0 clicks: enabling audio digits, clearing dialed #");
+    sayDigitsEnabled = true;
+    dialedNum = String();
+  }
+  // If someone has dialed too many digits without matching, encourage them to start over
+  if (dialedNum.length() > 10) { 
+  busy();
+  }
+  debugMsg(String("checking file for ") + dialedNum);
+  checkval = checkNumFile(sdPath, dialedNum);
+  debugMsg("checkNumFile returns " + String(checkval + 47));
+  switch(checkval) {
+  case 0:
+    // nothing found
+    debugMsg(dialedNum + String(" file not found"));
+    break;
+  case 1:
+    // something is playing, get ready for next #
+    sdPath.concat(dialedNum + "/");
+    debugMsg("sdPath = " + sdPath);
+    dialedNum = String();
+    break;
+  case 2:
+    // clear dialing digits
+    dialedNum = String();
+    break;
+  case 3:
+    // dead-end - play busy
+    debugMsg("dead-end - busy");
+    busy();
+    break;
+  case 4:
+    // redirect - read .go2 file and change path accordingly
+    sdPath = file2String(String(sdPath + dialedNum + ".go2"));
+    sdPath = sdPath.substring(0,sdPath.lastIndexOf(".")) + "/";
+    debugMsg("new sdPath: " + sdPath);
+    dialedNum = String();
+    break;
+  default:
+    debugMsg(String("unexpected return from checkNumFile()"));
+    break;
   }
 }
 
@@ -523,9 +595,13 @@ is always 380 mS. The particular choice of frequencies and
 durations used on a given call is used to indicate why the call 
 did not complete.
 */
+// For some reason this only plays one tone without all or certain combinations
+// of the debugMsg() statements. Works with it only in phase2, not with it only in 
+// phase 3.
 void sit() {
   debugMsg("sit");
-      
+
+  // elapsedMillis auto-increments after being set
   elapsedMillis since = 0;
   byte phase = 0;
   // Start playing tone 1
@@ -533,17 +609,20 @@ void sit() {
   sine2.begin(0,0,WAVEFORM_SINE);
   while (phase < 3) {
     if ((phase == 0) && (since >= 380)) {
+      debugMsg("phase1");
       sine1.begin(0.8,1428.5,WAVEFORM_SINE);
       sine2.begin(0,0,WAVEFORM_SINE);
       phase = 1;
     }
     // sum of first two tone durations 380 + 274 = 654
     if ((phase == 1) && (since >= 654)) {
+      debugMsg("phase2");
       sine1.begin(0.8,1776.7,WAVEFORM_SINE);
       phase = 2;
     }
     // sum of all three tone durations 380 + 274 + 380 = 1034
     if ((phase == 2) && (since >= 1034)) {
+      debugMsg("phase3");
       sine1.begin(0,0,WAVEFORM_SINE);
       phase = 3;
     }
@@ -616,6 +695,31 @@ void SDSayDigits(char *numFilename) {
     debugMsg(String("unable to open ") + String(numFilename));
   }
 }
+
+// 1024-based volume 
+void output_volume(int value) {
+#if defined(OUTPUT_HEADPHONES)
+  codec.volume((float)volume / 1023);
+#elif defined(OUTPUT_LINEOUT)
+  if (value < 750) {
+    codec.lineOutLevel(29); // default
+    amp1.gain(float(value)/768);
+    debugMsg(String(float(value)/768));
+  } else {
+    amp1.gain(1);
+    if (value > 784) {
+      codec.lineOutLevel(29 - (value - 752)/16);
+      debugMsg(String("lineOutLevel: ") + String(29 - (value-752)/16));
+    } else {
+      codec.lineOutLevel(29);
+      debugMsg("no gain");
+    }
+  }
+#else
+  #error "Either OUTPUT_HEADPHONES or OUTPUT_LINEOUT must be defined"
+#endif
+}
+
 
 // Handle debug messages appropriately
 // If debug is set, print to Serial. Otherwise ignore.  Maybe in future add ability to write to Serial.
