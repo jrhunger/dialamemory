@@ -1,7 +1,9 @@
 # MemoryPhone
 
 Teensyduino code for Dial-a-Memory / MemoryPhone project.
-
+To use on a new device, copy hardware.h to a new hardware-??.h and edit it to set the
+hardware-specific values per the comments.  Update the #include in MemoryPhone.ino to
+the new file.
 
 ## Version history:
 - 1.1.1 - Add support for device external to phone, using SilverTel AG1171S SLIC:w

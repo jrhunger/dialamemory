@@ -303,15 +303,6 @@ void loop()
 }
 
 void processDigit() {
-  if (count == 10) { // dialing 0 == 10 clicks
-    count = 0;
-  }
-  debugMsg(String(count));
-  if (sayDigitsEnabled) {
-    sayDigit(count);
-  }
-  dialedNum = String(dialedNum + String(count)); // append dialed digit to the number dialed
-  
   // If count is 0, dial was moved from resting position, but not far enough to trigger
   // the single pulse for 1.  Use this as a secret input, to enable debug output.
   // Only relevant for DIAL_INPUT_DIRECT due to extra "DIALING" input
@@ -320,10 +311,21 @@ void processDigit() {
     debugMsg("0 clicks: enabling audio digits, clearing dialed #");
     sayDigitsEnabled = true;
     dialedNum = String();
+    return;
   }
+  
+  if (count == 10) { // dialing 0 == 10 clicks
+    count = 0;
+  }
+  debugMsg(String(count));
+  if (sayDigitsEnabled) {
+    sayDigit(count);
+  }
+  dialedNum = String(dialedNum + String(count)); // append dialed digit to the number dialed
+
   // If someone has dialed too many digits without matching, encourage them to start over
   if (dialedNum.length() > 10) { 
-  busy();
+    busy();
   }
   debugMsg(String("checking file for ") + dialedNum);
   checkval = checkNumFile(sdPath, dialedNum);
